@@ -191,15 +191,15 @@ impl Model {
                             + self.cd[self.tokens[i].doc_id] as f32;
                         let num2 = self.params.beta + self.ckv[self.tokens[i].token][t] as f32;
                         let denom2 = self.vocab.len() as f32 * self.params.beta + self.ck[t] as f32;
-                        let p = num1 / denom1 * num2 / denom2;
+                        let p = (num1 / denom1) * (num2 / denom2);
                         ps.push(p);
                     }
                     let sum: f32 = ps.iter().sum();
-                    ps.iter_mut().for_each(|p| *p /= sum);
+                    let ps = ps.iter().map(|p| p / sum).collect::<Vec<_>>();
                     ps
                 };
                 let dist = WeightedIndex::new(&p).unwrap();
-                let new_topic = topic_options[dist.sample(&mut rng)];
+                let new_topic = dist.sample(&mut rng);
                 if new_topic != self.z[i] {
                     changed += 1;
                 }
@@ -223,7 +223,8 @@ impl Model {
                 let mut topic = self
                     .ckv
                     .iter()
-                    .map(|v| (&self.vocab.items[v[i]], v[0] as f32 / (self.ck[i] as f32)))
+                    .enumerate()
+                    .map(|(index, v)| (&self.vocab.items[index], v[i] as f32 / (self.ck[i] as f32)))
                     .collect::<Vec<_>>();
                 topic.sort_by(|(_, v1), (_, v2)| v1.total_cmp(v2));
                 topic.reverse();
@@ -322,7 +323,8 @@ impl Model {
             .map(|(cdk, sum)| {
                 cdk.iter()
                     .map(|value| {
-                        (*value as f32 + self.params.alpha) / (*sum as f32 + self.params.alpha)
+                        (*value as f32 + self.params.alpha)
+                            / (*sum as f32 + self.params.k as f32 * self.params.alpha)
                     })
                     .collect()
             })
@@ -345,7 +347,7 @@ fn accuracy(result: &PredictionResult, total: usize) -> f32 {
 
 fn main() -> Result<()> {
     let train_input = read("tokenized_test.json");
-    let model = Model::new(&train_input, Params::new(10, 200, 5e-4));
+    let model = Model::new(&train_input, Params::new(50, 200, 5e-4));
 
     let test_input = read("tokenized_test.json");
 
