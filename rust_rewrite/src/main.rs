@@ -121,10 +121,12 @@ impl Model {
         // let input = binding.into_values().collect::<Vec<_>>();
         // let input = &input;
 
+        let mut token_count = 0;
         let mut high_pass = HashMap::new();
         for doc in input {
             for token in &doc.text {
                 *high_pass.entry(token).or_insert(0) += 1;
+                token_count += 1;
             }
         }
 
@@ -137,7 +139,7 @@ impl Model {
             let doc_id = ids.add(&doc.id);
             let author = authors.add(&doc.author);
             for token in &doc.text {
-                if *high_pass.get(token).unwrap() as f32 > params.cut_off * input.len() as f32 {
+                if *high_pass.get(token).unwrap() as f32 > params.cut_off * token_count as f32 {
                     let token = vocab.add(token);
                     tokens.push(Token {
                         author,
@@ -148,19 +150,19 @@ impl Model {
             }
         }
 
-        let mut rng = rand_xorshift::XorShiftRng::from_rng(thread_rng()).unwrap();
+        let mut rng = rand_xorshift::XorShiftRng::seed_from_u64(0);
         let z = Uniform::from(0..params.k)
             .sample_iter(&mut rng)
             .take(tokens.len())
             .collect::<Vec<_>>();
 
-        let mut cdk = (0..tokens.len())
+        let mut cdk = (0..ids.len())
             .map(|_| vec![0usize; params.k])
             .collect::<Vec<_>>();
         let mut ckv = (0..vocab.len())
             .map(|_| vec![0usize; params.k])
             .collect::<Vec<_>>();
-        let mut cd = vec![0; tokens.len()];
+        let mut cd = vec![0; ids.len()];
         let mut ck = vec![0; params.k];
 
         for i in 0..z.len() {
@@ -189,8 +191,7 @@ impl Model {
     }
 
     fn train(&mut self, log: bool) {
-        let mut rng = rand_xorshift::XorShiftRng::from_rng(thread_rng()).unwrap();
-        let topic_options = (0..self.params.k).collect::<Vec<_>>();
+        let mut rng = rand_xorshift::XorShiftRng::seed_from_u64(0);
         for it in 0..self.params.iteration_count {
             let mut changed = 0;
             for i in 0..self.tokens.len() {
@@ -209,8 +210,8 @@ impl Model {
                         let p = (num1 / denom1) * (num2 / denom2);
                         ps.push(p);
                     }
-                    let sum: f32 = ps.iter().sum();
-                    let ps = ps.iter().map(|p| p / sum).collect::<Vec<_>>();
+                    //let sum: f32 = ps.iter().sum();
+                    //let ps = ps.iter().map(|p| p / sum).collect::<Vec<_>>();
                     ps
                 };
                 let dist = WeightedIndex::new(&p).unwrap();
@@ -361,8 +362,8 @@ fn accuracy(result: &PredictionResult, total: usize) -> f32 {
 }
 
 fn main() -> Result<()> {
-    let train_input = read("tokenized_test.json");
-    let model = Model::new(&train_input, Params::new(50, 200, 5e-4));
+    let train_input = read("tokenized_train.json");
+    let model = Model::new(&train_input, Params::new(20, 1000, 1e-5));
 
     let test_input = read("tokenized_test.json");
 
