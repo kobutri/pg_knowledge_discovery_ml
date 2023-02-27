@@ -106,6 +106,21 @@ struct Model {
 
 impl Model {
     fn new(input: &Vec<InputRecord>, params: Params) -> Self {
+        // let binding = input.iter().fold(HashMap::new(), |mut acc, value| {
+        //     let text= &mut acc.entry(&value.author).or_insert(InputRecord {
+        //         text: vec![],
+        //         id: value.id.clone(),
+        //         author: value.author.clone()
+        //     }).text;
+        //     for token in &value.text {
+        //         text.push(token.clone());
+        //     }
+
+        //     acc
+        // });
+        // let input = binding.into_values().collect::<Vec<_>>();
+        // let input = &input;
+
         let mut high_pass = HashMap::new();
         for doc in input {
             for token in &doc.text {
@@ -337,7 +352,7 @@ struct PredictionResult {
     t_p: usize,
     f_n: usize,
     f_p: usize,
-    positive: usize,
+    expected: usize,
 }
 
 fn accuracy(result: &PredictionResult, total: usize) -> f32 {
@@ -355,7 +370,7 @@ fn main() -> Result<()> {
         .into_iter()
         .enumerate()
         .map(|(index, input)| {
-            if index % 101 == 0 {
+            if index % 101 == 1 {
                 println!("test doc {} complete", index - 1);
             }
             (model.predict(&input), input)
@@ -366,7 +381,7 @@ fn main() -> Result<()> {
         .fold(HashMap::new(), |mut map, (prediction, input)| {
             map.entry(&input.author)
                 .or_insert(PredictionResult::default())
-                .positive += 1;
+                .expected += 1;
             if *prediction == *input.author {
                 map.get_mut(&input.author).unwrap().t_p += 1;
             } else {
