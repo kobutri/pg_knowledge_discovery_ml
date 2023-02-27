@@ -113,7 +113,7 @@ int main() {
             for(size_t j = 0; j < K; ++j) {
                 double num1 = alpha + static_cast<double>(cdk[j][i]);
                 double denom1 = static_cast<double>(K)*alpha + static_cast<double>(cd[i]);
-                double num2 = beta + static_cast<double>(ckv[j][docIds[i]]);
+                double num2 = beta + static_cast<double>(ckv[j][tokenIds[i]]);
                 double denom2 = static_cast<double>(V)*beta + static_cast<double>(ck[j]);
                 double p_temp = (num1 * num2) / (denom1 * denom2);
                 p.push_back(p_temp);
@@ -125,7 +125,7 @@ int main() {
             }
             Z[i] = new_topic;
             cdk[Z[i]][i]++;
-            ckv[Z[i]][docIds[i]]++;
+            ckv[Z[i]][tokenIds[i]]++;
             cd[i]++;
             ck[Z[i]]++;
         }
