@@ -16,7 +16,7 @@ from math import floor
 #   H: with highpass
 #   C: with chunks
 
-def preprocessing(path):
+def preprocessing_empty(path):
     """Return preprocessed dataframe
 
     Parameters
@@ -35,7 +35,7 @@ def preprocessing(path):
         author  author of the document that this token belongs to (as `str`)
         ======  ==============================================================
     """
-    pass
+    return _load(path)
 
 
 def preprocessing_L(path):
@@ -57,9 +57,7 @@ def preprocessing_SPC(path):
     df = _load(path)
     df.token = _lower(df.token)
     df.token = _tokenize(df.token)
-    df.token = _lemmatize(df.token)
-    df.token = _remove_punctuation(df.token)
-    df.token = _remove_stopwords(df.token)
+    df.token = _chunks(df.token)
     return df
 
 def preprocessing_C(path):
@@ -133,4 +131,15 @@ def _high_pass(docs: pd.Series, cutoff: float):
 
 def _chunks(doc: pd.Series):
     joined = doc.apply(lambda doc: "".join(doc))
-    return joined.apply(lambda doc: ["".join(doc[i], doc[i+1], doc[i+2]) for i in range(floor(len(doc)/3))])
+    return joined.apply(lambda doc: ["".join([doc[3*i], doc[3*i+1], doc[3*i+2]]) for i in range(floor(len(doc)/3))])
+
+if __name__ == "__main__":
+    for path in ["new_train.json", "new_test.json"]:
+        preprocessing_empty(path).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_empty.json', orient='records')
+        preprocessing_L(path).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_L.json', orient='records')
+        preprocessing_SP(path).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_SP.json', orient='records')
+        preprocessing_SPC(path).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_SPC.json', orient='records')
+        preprocessing_C(path).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_C.json', orient='records')
+        preprocessing_SPH(path, 1e-4).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_SPH_1e-4.json', orient='records')
+        preprocessing_SPHC(path, 1e-4).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_SPHC_1e-4.json', orient='records')
+        
