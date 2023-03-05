@@ -8,15 +8,15 @@ import json
 import string
 from math import floor
 
-# naming convention:
-# preprocessing_<L|S|P|H|C>
+# naming convention: preprocessing_<W|C>[L][S][P][H<cutoff>]
+#   W: with words
+#   C: with chunks
 #   L: with lemmatization
 #   S: with stopwords
 #   P: with punctuation
 #   H: with highpass
-#   C: with chunks
 
-def preprocessing_empty(path):
+def preprocessing_W(path):
     """Return preprocessed dataframe
 
     Parameters
@@ -35,7 +35,13 @@ def preprocessing_empty(path):
         author  author of the document that this token belongs to (as `str`)
         ======  ==============================================================
     """
-    return _load(path)
+    df = _load(path)
+    df.token = _lower(df.token)
+    df.token = _tokenize(df.token)
+    df.token = _lemmatize(df.token)
+    df.token = _remove_punctuation(df.token)
+    df.token = _remove_stopwords(df.token)
+    return df
 
 
 def preprocessing_L(path):
@@ -135,11 +141,19 @@ def _chunks(doc: pd.Series):
 
 if __name__ == "__main__":
     for path in ["new_train.json", "new_test.json"]:
-        preprocessing_empty(path).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_empty.json', orient='records')
-        preprocessing_L(path).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_L.json', orient='records')
-        preprocessing_SP(path).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_SP.json', orient='records')
-        preprocessing_SPC(path).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_SPC.json', orient='records')
+        preprocessing_W(path).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_W.json', orient='records')
+        preprocessing_L(path).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_WL.json', orient='records')
+        preprocessing_SP(path).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_WSP.json', orient='records')
+        preprocessing_SPC(path).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_CSP.json', orient='records')
         preprocessing_C(path).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_C.json', orient='records')
-        preprocessing_SPH(path, 1e-4).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_SPH_1e-4.json', orient='records')
-        preprocessing_SPHC(path, 1e-4).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_SPHC_1e-4.json', orient='records')
+        preprocessing_SPH(path, 5e-4).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_WSPH5e-4.json', orient='records')
+        preprocessing_SPHC(path, 5e-4).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_CSPH5e-4.json', orient='records')
+        preprocessing_SPH(path, 1e-4).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_WPH1e-4.json', orient='records')
+        preprocessing_SPHC(path, 1e-4).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_CSPH1e-4.json', orient='records')
+        preprocessing_SPH(path, 5e-5).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_WSPH5e-5.json', orient='records')
+        preprocessing_SPHC(path, 5e-5).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_CSPH5e-5.json', orient='records')
+        preprocessing_SPH(path, 1e-5).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_WSPH1e-5.json', orient='records')
+        preprocessing_SPHC(path, 1e-5).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_CSPH1e-5.json', orient='records')
+        preprocessing_SPH(path, 1e-6).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_WSPH1e-6.json', orient='records')
+        preprocessing_SPHC(path, 1e-6).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_CSPH1e-6.json', orient='records')
         
