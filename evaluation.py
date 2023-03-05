@@ -1,6 +1,9 @@
 import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.metrics import accuracy_score, precision_score, f1_score, recall_score
 
-def evaluate(input, names):
+def evaluate(input):
     """Return dataframe with random data.
 
     Parameters
@@ -13,20 +16,31 @@ def evaluate(input, names):
         <method> predicted author of document with <method> (as `str`)
         ...
         ======== ==============================================================
-    names : list(str)
-        Names of the prediction methods
     """
+    pass
 
 #utility functions
 
-def plotOverview(input, names):
+def plotOverview(input):
+    # calc metrics
+    input.iloc[:, 1:].apply(lambda x: (accuracy_score(x), precision_score(x), recall_score(x), f1_score(x)))
+    # pivot table
     pass
 
-def plotPerAuthor(input, name):
+def plotMethodOverview(input, title):
     pass
 
-def plotROC(input, name):
+def plotConfusionMatrix(input, title):
     pass
 
-def plotTable(input, name):
+def plotPerAuthor(input, title):
+    pass
+
+def plotROC(input, title):
+    pass
+
+def plotTable(input, title):
+    pass
+
+if __name__ == "__main__":
     pass
