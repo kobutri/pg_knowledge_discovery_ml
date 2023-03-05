@@ -364,7 +364,7 @@ fn accuracy(result: &PredictionResult, total: usize) -> f32 {
 
 fn main() -> Result<()> {
     let train_input = read("tokenized_train.json");
-    let model = Model::new(&train_input, Params::new(20, 150, 1e-5));
+    let model = Model::new(&train_input, Params::new(100, 150, 1e-4));
 
     let test_input = read("tokenized_test.json");
 

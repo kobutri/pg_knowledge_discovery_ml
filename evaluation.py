@@ -16,3 +16,17 @@ def evaluate(input, names):
     names : list(str)
         Names of the prediction methods
     """
+
+#utility functions
+
+def plotOverview(input, names):
+    pass
+
+def plotPerAuthor(input, name):
+    pass
+
+def plotROC(input, name):
+    pass
+
+def plotTable(input, name):
+    pass

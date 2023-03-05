@@ -1,139 +1,126 @@
-use std::collections::HashMap;
+use rand::{thread_rng, Rng, SeedableRng};
+use rand_distr::Distribution;
+use serde::Deserialize;
+use std::slice::SliceIndex;
+use std::{
+    collections::{HashMap, HashSet},
+    hash::Hash,
+};
 
-use rand::{distributions::{Uniform, WeightedIndex}, prelude::Distribution, thread_rng, SeedableRng};
+#[derive(Deserialize)]
+struct Doc {
+    id: String,
+    token: Vec<String>,
+    author: String,
+}
 
 fn main() {
-    let train_file = std::fs::read_to_string("./tokenized_train.json").unwrap();
-    let train_data: serde_json::Value = serde_json::from_str(&train_file).unwrap();
+    let n_gibbs: usize = 2000;
 
-    let mut vocab_freq_map = HashMap::new();
-    let mut token_count = 0;
-    for doc in train_data.as_array().unwrap() {
-        for token in doc["text"].as_array().unwrap() {
-            token_count += 1;
-            *vocab_freq_map.entry(token.as_str().unwrap()).or_insert(0) += 1;
-        }
-    }
+    let train_input =
+        std::fs::read_to_string("../../preprocessing_output/preprocessed_train_L.json").unwrap();
+    let train_docs: Vec<Doc> = serde_json::from_str(&train_input).unwrap();
 
-    let mut vocab_map = HashMap::new();
-    let mut vocab = vec![];
-
-    for (key, value) in vocab_freq_map {
-        if (value as f64 / token_count as f64) > 1e-5 {
-            if !vocab_map.contains_key(key) {
-                vocab_map.insert(key, vocab.len());
-                vocab.push(key);
-            }
-        }
-    }
-
-    println!("vocab size: {}", vocab.len());
-
-    let mut docs = vec![];
-    let mut authors = vec![];
-    let mut authors_map = HashMap::new();
-
-    let mut d_id = vec![];
-    let mut a_id = vec![];
-    let mut t_id = vec![];
-
-    for (i, doc) in train_data.as_array().unwrap().iter().enumerate() {
-        docs.push(doc["id"].as_str().unwrap());
-
-        let mut author_id = 0;
-        if authors_map.contains_key(doc["author"].as_str().unwrap()) {
-            author_id = *authors_map.get(doc["author"].as_str().unwrap()).unwrap();
-        } else {
-            authors_map.insert(doc["author"].as_str().unwrap(), authors.len());
-            author_id = authors.len();
-            authors.push(doc["author"].as_str().unwrap());
-        }
-        for token in doc["text"].as_array().unwrap() {
-            if vocab_map.contains_key(token.as_str().unwrap()) {
-                d_id.push(i);
-                a_id.push(author_id);
-                t_id.push(*vocab_map.get(token.as_str().unwrap()).unwrap());
-            }
-        }
-    }
-
-    let D = docs.len();
-    let N = t_id.len();
-    let K = 20usize;
-    let V = vocab.len();
-    let alpha = 0.1;
-    let beta = 0.001;
-    dbg!(N, K, V, alpha, beta);
-
-    let mut rng = rand_xorshift::XorShiftRng::seed_from_u64(0);
-
-    let mut Z = Uniform::new(0, K)
-        .sample_iter(&mut rng)
-        .take(N)
-        .collect::<Vec<_>>();
-
-    let mut cdk = vec![];
-    let mut ckv = vec![];
-    let mut cd = vec![0usize; D];
-    let mut ck = vec![0usize; K];
-
-    for _ in 0..K {
-        let v1 = vec![0usize; N];
-        cdk.push(v1);
-        let v2 = vec![0usize; V];
-        ckv.push(v2);
-    }
-
-    for i in 0..N {
-        cd[d_id[i]] += 1;
-        cdk[Z[i]][d_id[i]] += 1;
-        ckv[Z[i]][t_id[i]] += 1;
-        ck[Z[i]] += 1;
-    }
-
-    for it in 0..1000 {
-        let mut changes = 0;
-        for i in 0..N {
-            cdk[Z[i]][d_id[i]] -= 1;
-            ckv[Z[i]][t_id[i]] -= 1;
-            cd[d_id[i]] -= 1;
-            ck[Z[i]] -= 1;
-
-            let mut ps = vec![];
-            let mut p_sum = 0f64;
-            for j in 0..K {
-                let num1 = alpha + cdk[j][d_id[i]] as f64;
-                let denom1 = K as f64 * alpha + cd[d_id[i]] as f64;
-                let num2 = beta + ckv[j][t_id[i]] as f64;
-                let denom2 = V as f64 * beta + ck[j] as f64;
-                let p_temp = (num1 * num2) / (denom1 * denom2);
-                p_sum += p_temp;
-                ps.push(p_temp);
-            }
-
-            let dist = WeightedIndex::new(ps).unwrap();
-            let new_topic = dist.sample(&mut rng);
-            if new_topic != Z[i] {
-                changes += 1;
-            }
-
-            Z[i] = new_topic;
-            cdk[Z[i]][d_id[i]] += 1;
-            ckv[Z[i]][t_id[i]] += 1;
-            cd[d_id[i]] += 1;
-            ck[Z[i]] += 1;
-        }
-        println!("iteration {} complete, changed {} assignments", it, changes);
-    }
-
-    let result = serde_json::json!({
-        "docs": docs, 
-        "vocab": vocab, 
-        "authors": authors,
-        "Z": Z,
-        "d_id": d_id,
-        "a_id": a_id,
-        "t_id" : t_id,
+    let mut dict = HashSet::new();
+    train_docs.iter().for_each(|doc| {
+        doc.token.iter().for_each(|token| {
+            dict.insert(token);
+        })
     });
-    std::fs::write("./result.json", serde_json::to_string_pretty(&result).unwrap()).unwrap();
+    let mut dict_map = HashMap::with_capacity(dict.len());
+    let mut dict_arr = vec![];
+    dict.iter().for_each(|token| {
+        dict_map.insert(token.clone(), dict_arr.len());
+        dict_arr.push(token.to_owned().to_owned());
+    });
+    let vocab = dict_arr;
+    let docs =
+        Vec::from_iter(train_docs.iter().map(|doc| {
+            Vec::from_iter(doc.token.iter().map(|token| *dict_map.get(token).unwrap()))
+        }));
+    let V = vocab.len();
+    let k = 100;
+    let N = Vec::from_iter(docs.iter().map(|doc| doc.len()));
+    let M = docs.len();
+
+    println!("V: {}\nk: {}\nN: {:?},...\nM: {}", V, k, &N[0..10], M);
+
+    let mut rng = rand_xorshift::XorShiftRng::from_rng(thread_rng()).unwrap();
+    let alpha = rand_distr::Gamma::new(100.0, 0.1f64)
+        .unwrap()
+        .sample(&mut rng);
+    let beta = rand_distr::Gamma::new(100.0, 0.01)
+        .unwrap()
+        .sample(&mut rng);
+    println!("α: {}\nβ: {}", alpha, beta);
+
+    let mut n_iw = vec![vec![0;k]; V];
+    let mut n_i = vec![0usize; k];
+    let mut n_di = vec![vec![0;k]; M];
+    let mut n_d = vec![0usize; M];
+
+    let N_max = *N.iter().max().unwrap();
+    let mut assign = vec![0usize; M * N_max];
+
+    for d in 0..M {
+        for n in 0..N[d] {
+            let w_dn = docs[d][n];
+            assign[d * N_max + n] = rng.gen_range(0..k);
+            let i = assign[d * N_max + n];
+            n_iw[w_dn][i] += 1;
+            n_i[i] += 1;
+            n_di[d][i] += 1;
+            n_d[d] += 1;
+        }
+    }
+
+    println!("\n========== START SAMPLER ==========");
+    for t in 0..n_gibbs {
+        let current = t % 2;
+        let next = (t + 1) % 2;
+        for d in 0..M {
+            for n in 0..N[d] {
+                let w_dn = docs[d][n];
+
+                let i_t = assign[d * N_max + n];
+                n_iw[w_dn][i_t] -= 1;
+                n_i[i_t] -= 1;
+                n_di[d][i_t] -= 1;
+                n_d[d] -= 1;
+
+                let prob = {
+                    let mut prob = vec![0f64; k];
+                    for i in 0..k {
+                        let left_num = n_iw[w_dn][i] as f64 + beta;
+                        let left_denom = n_i[i] as f64 + V as f64 * beta;
+                        let right_num = n_di[d][i] as f64 + alpha;
+                        let right_denom = n_d[d] as f64 + k as f64 * alpha;
+                        prob[i] = (left_num * right_num) / (left_denom * right_denom);
+                    }
+                    prob
+                };
+                let i_tp1 = rand::distributions::WeightedIndex::new(prob)
+                    .unwrap()
+                    .sample(&mut rng);
+
+                n_iw[w_dn][i_tp1] += 1;
+                n_i[i_tp1] += 1;
+                n_di[d][i_tp1] += 1;
+                n_d[d] += 1;
+                assign[d * N_max + n] = i_tp1;
+            }
+        }
+        if (t + 1) % 50 == 0 {
+            println!("Sampled {}/{}", (t + 1), n_gibbs);
+        }
+    }
+
+    let mut theta = vec![0f64;k*V];
+    for d in 0..M {
+        for i in 0..k {
+            theta[d*k+i] = (n_di[d][i] as f64 + alpha) / (n_d[d] as f64 + k as f64 * alpha);
+        }
+    }
+    let theta = serde_json::to_string(&theta).unwrap();
+    std::fs::write("./theta_train", theta).unwrap();
 }
