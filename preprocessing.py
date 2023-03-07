@@ -148,7 +148,7 @@ if __name__ == "__main__":
         preprocessing_C(path).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_C.json', orient='records')
         preprocessing_SPH(path, 5e-4).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_WSPH5e-4.json', orient='records')
         preprocessing_SPHC(path, 5e-4).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_CSPH5e-4.json', orient='records')
-        preprocessing_SPH(path, 1e-4).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_WPH1e-4.json', orient='records')
+        preprocessing_SPH(path, 1e-4).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_WSPH1e-4.json', orient='records')
         preprocessing_SPHC(path, 1e-4).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_CSPH1e-4.json', orient='records')
         preprocessing_SPH(path, 5e-5).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_WSPH5e-5.json', orient='records')
         preprocessing_SPHC(path, 5e-5).to_json(f'preprocessing_output/preprocessed_{"train" if "train" in path else "test"}_CSPH5e-5.json', orient='records')
