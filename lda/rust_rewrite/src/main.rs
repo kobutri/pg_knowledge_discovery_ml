@@ -1,400 +1,369 @@
-use anyhow::*;
-use rand::{
-    distributions::{Uniform, WeightedIndex},
-    prelude::*,
+use std::{
+    collections::{HashMap, HashSet},
+    ffi::OsString,
+    vec,
 };
-use std::{collections::HashMap, hash::Hash, ops::Index, slice::SliceIndex};
 
-#[derive(Debug, serde::Deserialize)]
-struct InputRecord {
-    id: String,
-    text: Vec<String>,
-    author: String,
-}
+use rand::{seq::SliceRandom, thread_rng, SeedableRng};
+use rand_distr::{Distribution, Uniform, WeightedIndex};
+use rand_xorshift::XorShiftRng;
+use rayon::iter::IntoParallelRefIterator;
+use rayon::iter::ParallelIterator;
+// use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
+use serde::Deserialize;
 
-fn read(path: &str) -> Vec<InputRecord> {
-    let buffer = std::fs::read_to_string(path).unwrap();
-    return serde_json::from_str(&buffer).unwrap();
-}
-
-#[derive(Default, Clone)]
-struct OrderedSet<T: Clone + Eq + Hash> {
-    items: Vec<T>,
-    items_map: HashMap<T, usize>,
-}
-
-impl<T: Clone + Eq + Hash> OrderedSet<T> {
-    fn add(&mut self, id: &T) -> usize {
-        if let Some(index) = self.items_map.get(id) {
-            return *index;
+fn main() {
+    let mut preprocessing_map: HashMap<String, (OsString, OsString)> = HashMap::new();
+    for path in std::fs::read_dir("../preprocessing_output").unwrap() {
+        let path = path.unwrap();
+        let str_path = path.file_name().clone().into_string().unwrap();
+        let method = str_path
+            .split("_")
+            .last()
+            .unwrap()
+            .split(".")
+            .next()
+            .unwrap()
+            .to_string();
+        let entry = preprocessing_map
+            .entry(method)
+            .or_insert((OsString::new(), OsString::new()));
+        if str_path.contains("train") {
+            entry.0 = path.path().as_os_str().to_owned();
         } else {
-            let index = self.items.len();
-            self.items.push(id.to_owned());
-            self.items_map
-                .insert(self.items.last().unwrap().to_owned(), index);
-            return index;
+            entry.1 = path.path().as_os_str().to_owned();
         }
     }
+    std::fs::create_dir_all("results_output").unwrap();
+    preprocessing_map
+        .par_iter()
+        .for_each(|(method, (train_path, test_path))| {
+            let train_str = std::fs::read_to_string(train_path).unwrap();
+            println!("{:?}", train_path);
+            let train_docs: Vec<Document> = serde_json::from_str(&train_str).unwrap();
 
-    fn len(&self) -> usize {
-        self.items.len()
-    }
-}
+            let train_docs = Document::merge_docs(train_docs);
+            let mut model = LDAModel::new(train_docs.clone());
+            model.fit();
+            let train_theta = model.get_theta();
 
-impl<T: Clone + Eq + Hash, Idx> Index<Idx> for OrderedSet<T>
-where
-    Idx: SliceIndex<[T], Output = T>,
-{
-    type Output = T;
-
-    #[inline(always)]
-    fn index(&self, index: Idx) -> &Self::Output {
-        self.items.index(index)
-    }
+            let test_str = std::fs::read_to_string(test_path).unwrap();
+            let test_docs: Vec<Document> = serde_json::from_str(&test_str).unwrap();
+            let mut predictions = Vec::with_capacity(test_docs.len());
+            let mut rng = XorShiftRng::from_rng(thread_rng()).unwrap();
+            for doc in test_docs {
+                let test_theta = model.infer_theta(doc, &mut rng);
+                let mut min = f64::INFINITY;
+                let mut min_i = 0;
+                for (i, theta) in train_theta.iter().enumerate() {
+                    let dist = hellinger(theta, &test_theta);
+                    if hellinger(theta, &test_theta) < min {
+                        min = dist;
+                        min_i = i;
+                    }
+                }
+                predictions.push(train_docs[min_i].author.clone());
+            }
+            let predictions_string = serde_json::to_string(&predictions).unwrap();
+            let output_path = format!("./results_output/results_lda_{}.json", method);
+            std::fs::write(&output_path, predictions_string).unwrap();
+        })
 }
 
 #[derive(Default, Clone, Debug)]
-struct Token {
-    token: usize,
-    author: usize,
-    doc_id: usize,
-}
-
-#[derive(Clone, Copy)]
-struct Params {
+struct LDAModel {
     k: usize,
-    alpha: f32,
-    beta: f32,
-    iteration_count: usize,
-    cut_off: f32,
+    v: usize,
+    alpha: f64,
+    beta: f64,
+    vocab: Vec<String>,
+    vocab_map: HashMap<String, usize>,
+    docs: Vec<Vec<LDADoc>>,
+    cdk: Vec<Vec<usize>>,
+    ckv: Vec<Vec<usize>>,
+    cd: Vec<usize>,
+    ck: Vec<usize>,
 }
 
-impl Default for Params {
-    fn default() -> Self {
-        Self::new(10, 10, 5e-4)
-    }
-}
+impl LDAModel {
+    fn new(docs: Vec<Document>) -> Self {
 
-impl Params {
-    fn new(k: usize, iteration_count: usize, cut_off: f32) -> Self {
-        let alpha: f32 = 0.1f32.min(50.0 / k as f32);
-        let beta: f32 = 0.01;
+        let vocab =
+            HashSet::<String>::from_iter(docs.iter().map(|doc| doc.token.clone()).flatten())
+                .into_iter()
+                .collect::<Vec<_>>();
+        let vocab_map =
+            vocab
+                .iter()
+                .enumerate()
+                .fold(HashMap::new(), |mut map, (index, word)| {
+                    map.insert(word.clone(), index);
+                    map
+                });
+
+        let docs: Vec<Vec<_>> = docs
+            .iter()
+            .enumerate()
+            .map(|(index, doc)| {
+                doc.token
+                    .iter()
+                    .map(|token| LDADoc {
+                        d: index,
+                        w: vocab_map[token],
+                        t: 0,
+                    })
+                    .collect()
+            })
+            .collect();
+
+        let k = 50usize;
+        let v = vocab.len();
+        let alpha = 0.1;
+        let beta = 0.01;
+
+        let cdk = Vec::from_iter((0..docs.len()).map(|_| vec![0usize; k]));
+        let ckv = Vec::from_iter((0..v).map(|_| vec![0usize; k]));
+        let cd = vec![0usize; docs.len()];
+        let ck = vec![0usize; k];
 
         Self {
             k,
+            v,
             alpha,
             beta,
-            iteration_count,
-            cut_off,
-        }
-    }
-}
-
-#[derive(Default, Clone)]
-struct Model {
-    vocab: OrderedSet<String>,
-    authors: OrderedSet<String>,
-    ids: OrderedSet<String>,
-    tokens: Vec<Token>,
-    z: Vec<usize>,
-    cdk: Vec<Vec<usize>>,
-    cd: Vec<usize>,
-    ckv: Vec<Vec<usize>>,
-    ck: Vec<usize>,
-    params: Params,
-}
-
-impl Model {
-    fn new(input: &Vec<InputRecord>, params: Params) -> Self {
-        // let binding = input.iter().fold(HashMap::new(), |mut acc, value| {
-        //     let text= &mut acc.entry(&value.author).or_insert(InputRecord {
-        //         text: vec![],
-        //         id: value.id.clone(),
-        //         author: value.author.clone()
-        //     }).text;
-        //     for token in &value.text {
-        //         text.push(token.clone());
-        //     }
-
-        //     acc
-        // });
-        // let input = binding.into_values().collect::<Vec<_>>();
-        // let input = &input;
-
-        let mut token_count = 0;
-        let mut high_pass = HashMap::new();
-        for doc in input {
-            for token in &doc.text {
-                *high_pass.entry(token).or_insert(0) += 1;
-                token_count += 1;
-            }
-        }
-
-        let mut vocab = OrderedSet::default();
-        let mut ids = OrderedSet::default();
-        let mut authors = OrderedSet::default();
-        let mut tokens = vec![];
-
-        for doc in input {
-            let doc_id = ids.add(&doc.id);
-            let author = authors.add(&doc.author);
-            for token in &doc.text {
-                if *high_pass.get(token).unwrap() as f32 > params.cut_off * token_count as f32 {
-                    let token = vocab.add(token);
-                    tokens.push(Token {
-                        author,
-                        token,
-                        doc_id,
-                    });
-                }
-            }
-        }
-        let mut rng = rand_xorshift::XorShiftRng::seed_from_u64(0);
-        tokens.shuffle(&mut rng);
-
-        let z = Uniform::from(0..params.k)
-            .sample_iter(&mut rng)
-            .take(tokens.len())
-            .collect::<Vec<_>>();
-
-        let mut cdk = (0..ids.len())
-            .map(|_| vec![0usize; params.k])
-            .collect::<Vec<_>>();
-        let mut ckv = (0..vocab.len())
-            .map(|_| vec![0usize; params.k])
-            .collect::<Vec<_>>();
-        let mut cd = vec![0; ids.len()];
-        let mut ck = vec![0; params.k];
-
-        for i in 0..z.len() {
-            cdk[tokens[i].doc_id][z[i]] += 1;
-            ckv[tokens[i].token][z[i]] += 1;
-            cd[tokens[i].doc_id] += 1;
-            ck[z[i]] += 1;
-        }
-
-        let mut this = Self {
             vocab,
-            authors,
-            ids,
-            tokens,
-            z,
+            vocab_map,
+            docs,
             cdk,
             cd,
             ckv,
             ck,
-            params,
-        };
-
-        this.train(true);
-
-        return this;
-    }
-
-    fn train(&mut self, log: bool) {
-        let mut rng = rand_xorshift::XorShiftRng::seed_from_u64(0);
-        for it in 0..self.params.iteration_count {
-            let mut changed = 0;
-            for i in 0..self.tokens.len() {
-                self.cdk[self.tokens[i].doc_id][self.z[i]] -= 1;
-                self.ckv[self.tokens[i].token][self.z[i]] -= 1;
-                self.cd[self.tokens[i].doc_id] -= 1;
-                self.ck[self.z[i]] -= 1;
-                let p = {
-                    let mut ps = vec![];
-                    for t in 0..self.params.k {
-                        let num1 = self.params.alpha + self.cdk[self.tokens[i].doc_id][t] as f32;
-                        let denom1 = self.params.k as f32 * self.params.alpha
-                            + self.cd[self.tokens[i].doc_id] as f32;
-                        let num2 = self.params.beta + self.ckv[self.tokens[i].token][t] as f32;
-                        let denom2 = self.vocab.len() as f32 * self.params.beta + self.ck[t] as f32;
-                        let p = (num1 / denom1) * (num2 / denom2);
-                        ps.push(p);
-                    }
-                    //let sum: f32 = ps.iter().sum();
-                    //let ps = ps.iter().map(|p| p / sum).collect::<Vec<_>>();
-                    ps
-                };
-                let dist = WeightedIndex::new(&p).unwrap();
-                let new_topic = dist.sample(&mut rng);
-                if new_topic != self.z[i] {
-                    changed += 1;
-                }
-                self.z[i] = new_topic;
-                self.cdk[self.tokens[i].doc_id][self.z[i]] += 1;
-                self.ckv[self.tokens[i].token][self.z[i]] += 1;
-                self.cd[self.tokens[i].doc_id] += 1;
-                self.ck[self.z[i]] += 1;
-            }
-            if log {
-                println!(
-                    "iteration {} finished, changed {} assignments",
-                    it + 1,
-                    changed
-                );
-            }
-        }
-
-        if log {
-            for i in 0..self.params.k {
-                let mut topic = self
-                    .ckv
-                    .iter()
-                    .enumerate()
-                    .map(|(index, v)| (&self.vocab.items[index], v[i] as f32 / (self.ck[i] as f32)))
-                    .collect::<Vec<_>>();
-                topic.sort_by(|(_, v1), (_, v2)| v1.total_cmp(v2));
-                topic.reverse();
-                println!("{:?}", &topic[0..10])
-            }
         }
     }
 
-    fn predict(&self, input: &InputRecord) -> String {
-        let mut this = self.clone();
-        this.authors = OrderedSet::default();
-        this.ids = OrderedSet::default();
-        this.tokens = vec![];
+    fn fit(&mut self) {
+        let mut rng = XorShiftRng::from_rng(thread_rng()).unwrap();
 
-        //let author_id = this.authors.add(&input.author);
-        let doc_id = this.ids.add(&"unknown".to_string());
-
-        for token in &input.text {
-            if this.vocab.items_map.contains_key(token) {
-                let token_id = this.vocab.add(&token);
-                this.tokens.push(Token {
-                    token: token_id,
-                    author: 0,
-                    doc_id,
-                });
+        let uniforms = Uniform::new(0, self.k);
+        for doc in self.docs.iter_mut() {
+            for token in doc {
+                let t = uniforms.sample(&mut rng);
+                token.t = t;
+                self.cdk[token.d][t] += 1;
+                self.cd[token.d] += 1;
+                self.ckv[token.w][t] += 1;
+                self.ck[t] += 1;
             }
         }
 
-        let mut rng = rand_xorshift::XorShiftRng::from_rng(thread_rng()).unwrap();
-        this.z = Uniform::from(0..this.params.k)
-            .sample_iter(&mut rng)
-            .take(this.tokens.len())
-            .collect::<Vec<_>>();
+        sample_lda(
+            &mut self.docs,
+            &mut self.cdk,
+            &mut self.ckv,
+            &mut self.cd,
+            &mut self.ck,
+            self.k,
+            self.v,
+            self.alpha,
+            self.beta,
+            2000,
+            true,
+            true,
+            &mut rng,
+        );
 
-        this.cdk = (0..this.tokens.len())
-            .map(|_| vec![0usize; this.params.k])
-            .collect::<Vec<_>>();
-
-        this.cd = vec![0; this.tokens.len()];
-
-        // if self.vocab.len() != this.vocab.len() {
-        //     let diff = this.vocab.len() - self.vocab.len();
-        //     for _ in 0..diff {
-        //         this.ckv.push(vec![0; this.params.k]);
-        //     }
-        //     for _ in 0..diff {
-        //         this.ck.push(0);
-        //     }
+        // for t in  0..self.k {
+        //     let mut vals = self.ckv.iter().map(|c| c[t]).zip(0..self.v).collect::<Vec<_>>();
+        //     vals.sort_by_key(|(t, _)| *t);
+        //     let vals = vals.iter().rev().take(10).map(|(val, index)| (self.vocab[*index].clone(), *val)).collect::<Vec<_>>();
+        //     println!("topic {}: {:?}", t, vals);
         // }
+    }
 
-        for i in 0..this.z.len() {
-            this.cdk[this.tokens[i].doc_id][this.z[i]] += 1;
-            this.ckv[this.tokens[i].token][this.z[i]] += 1;
-            this.cd[this.tokens[i].doc_id] += 1;
-            this.ck[this.z[i]] += 1;
+    fn get_theta(&self) -> Vec<Vec<f64>> {
+        let mut theta = Vec::from_iter((0..self.docs.len()).map(|_| vec![0f64; self.k]));
+        for d in 0..self.docs.len() {
+            for t in 0..self.k {
+                theta[d][t] = (self.cdk[d][t] as f64 + self.alpha)
+                    / (self.cd[d] as f64 + self.k as f64 * self.alpha);
+            }
         }
-
-        this.train(false);
-
-        let theta1 = this.theta();
-        let theta2 = self.theta();
-
-        theta1
-            .iter()
-            .zip(theta2)
-            .map(|(theta1, theta2)| {
-                (0.5f32
-                    * theta1
-                        .iter()
-                        .zip(theta2)
-                        .map(|(theta1, theta2)| (theta1.sqrt() - theta2.sqrt()).powi(2))
-                        .sum::<f32>())
-                .sqrt()
-            })
-            .enumerate()
-            .fold(HashMap::new(), |mut authors, (index, diff)| {
-                let entry = &mut *authors
-                    .entry(&self.authors[self.tokens[index].author])
-                    .or_insert((0f32, 0usize));
-                entry.0 += diff;
-                entry.1 += 1;
-                authors
-            })
-            .iter()
-            .map(|(key, (val, sum))| (val / (*sum as f32), *key))
-            .min_by(|(val, _), (val2, _)| val.total_cmp(val2))
-            .unwrap()
-            .1
-            .to_owned()
+        theta
     }
 
-    fn theta(&self) -> Vec<Vec<f32>> {
-        self.cdk
-            .iter()
-            .zip(&self.cd)
-            .map(|(cdk, sum)| {
-                cdk.iter()
-                    .map(|value| {
-                        (*value as f32 + self.params.alpha)
-                            / (*sum as f32 + self.params.k as f32 * self.params.alpha)
-                    })
-                    .collect()
-            })
-            .collect()
+    fn infer_theta(&self, doc: Document, rng: &mut XorShiftRng) -> Vec<f64> {
+        let mut cdk = vec![vec![0usize; self.k]];
+        let mut cd = vec![0usize; 1];
+        let mut ckv = self.ckv.clone();
+        let mut ck = self.ck.clone();
+        let uniforms = Uniform::new(0, self.k);
+        let mut docs = vec![Vec::from_iter(doc.token.iter().filter_map(|token| {
+            if self.vocab_map.contains_key(token) {
+                let t = uniforms.sample(rng);
+                cdk[0][t] += 1;
+                cd[0] += 1;
+                let w = self.vocab_map[token];
+                ckv[w][t] += 1;
+                ck[t] += 1;
+
+                Some(LDADoc {
+                    d: 0,
+                    w,
+                    t
+                })
+            } else { None }
+        }))];
+
+        sample_lda(
+            &mut docs,
+            &mut cdk,
+            &mut ckv,
+            &mut cd,
+            &mut ck,
+            self.k,
+            self.v,
+            self.alpha,
+            self.beta,
+            500,
+            false,
+            true,
+            rng,
+        );
+
+        let mut theta = vec![0f64; self.k];
+        for t in 0..self.k {
+            theta[t] =
+                (cdk[0][t] as f64 + self.alpha) / (self.cd[0] as f64 + self.k as f64 * self.alpha);
+        }
+        theta
     }
 }
 
-#[derive(Default, Debug)]
-struct PredictionResult {
-    t_p: usize,
-    f_n: usize,
-    f_p: usize,
-    expected: usize,
+#[derive(Clone, Debug)]
+struct LDADoc {
+    d: usize,
+    w: usize,
+    t: usize,
 }
 
-fn accuracy(result: &PredictionResult, total: usize) -> f32 {
-    let tn = total - result.t_p + result.f_p;
-    return (tn + result.t_p) as f32 / (total as f32);
+fn sample_lda(
+    docs: &mut Vec<Vec<LDADoc>>,
+    cdk: &mut Vec<Vec<usize>>,
+    ckv: &mut Vec<Vec<usize>>,
+    cd: &mut Vec<usize>,
+    ck: &mut Vec<usize>,
+    k: usize,
+    v: usize,
+    alpha: f64,
+    beta: f64,
+    samples: usize,
+    debug: bool,
+    shuffle: bool,
+    rng: &mut XorShiftRng,
+) {
+    let mut last_changes = usize::MAX;
+    let mut changes = 0;
+    let mut debug_changes = 0;
+    let mut it_since_reset = 0;
+    for it in 0..samples {
+        if shuffle {
+            docs.shuffle(rng);
+        }
+        for doc in docs.iter_mut() {
+            if shuffle {
+                doc.shuffle(rng);
+            }
+            for token in doc.iter_mut() {
+                cdk[token.d][token.t] -= 1;
+                ckv[token.w][token.t] -= 1;
+                cd[token.d] -= 1;
+                ck[token.t] -= 1;
+                let p = get_cond_prob(token.d, token.w, cdk, cd, ckv, ck, k, v, alpha, beta);
+                let t = WeightedIndex::new(p).unwrap().sample(rng);
+                if t != token.t {
+                    debug_changes += 1;
+                    changes += 1
+                }
+                token.t = t;
+                cdk[token.d][token.t] += 1;
+                ckv[token.w][token.t] += 1;
+                cd[token.d] += 1;
+                ck[token.t] += 1;
+            }
+        }
+        if it % 100 == 0 {
+            let rel_change = changes as f64 / (last_changes as f64);
+            if rel_change > 0.99 && rel_change < 1.05 {
+                if debug {
+                    println!("early break due to rel change {rel_change} at iteration {it}");
+                }
+                break;
+            }
+        }
+        it_since_reset += 1;
+        if debug && it % 20 == 0 {
+            println!(" iteration {it} of {samples}, average changes {}", debug_changes as f64 / it_since_reset as f64);
+            it_since_reset = 0;
+            debug_changes = 0;
+        }
+    }
 }
 
-fn main() -> Result<()> {
-    let train_input = read("tokenized_train.json");
-    let model = Model::new(&train_input, Params::new(100, 150, 1e-4));
+fn get_cond_prob(
+    d: usize,
+    w: usize,
+    cdk: &Vec<Vec<usize>>,
+    cd: &Vec<usize>,
+    ckv: &Vec<Vec<usize>>,
+    ck: &Vec<usize>,
+    k: usize,
+    v: usize,
+    alpha: f64,
+    beta: f64,
+) -> Vec<f64> {
+    let mut p = vec![0f64; k];
+    let d1 = k as f64 * alpha + cd[d] as f64;
+    let d2 = v as f64 * beta;
+    for t in 0..k {
+        let l = (cdk[d][t] as f64 + alpha) / d1;
+        let r = (ckv[w][t] as f64 + beta) / (d2 + ck[t] as f64);
+        p[t] = l * r;
+    }
+    p
+}
 
-    let test_input = read("tokenized_test.json");
+#[derive(Deserialize, Clone)]
+struct Document {
+    id: String,
+    token: Vec<String>,
+    author: String,
+}
 
-    let predictions = &test_input[0..300]
-        .into_iter()
-        .enumerate()
-        .map(|(index, input)| {
-            if index % 101 == 1 {
-                println!("test doc {} complete", index - 1);
-            }
-            (model.predict(&input), input)
-        })
-        .collect::<Vec<_>>();
-    let results = predictions
-        .iter()
-        .fold(HashMap::new(), |mut map, (prediction, input)| {
-            map.entry(&input.author)
-                .or_insert(PredictionResult::default())
-                .expected += 1;
-            if *prediction == *input.author {
-                map.get_mut(&input.author).unwrap().t_p += 1;
-            } else {
-                map.get_mut(&input.author).unwrap().f_n += 1;
-                map.entry(&prediction)
-                    .or_insert(PredictionResult::default())
-                    .f_p += 1;
-            }
-            map
-        });
-    println!("{:#?}", results);
+impl Document {
+    fn merge_docs(docs: Vec<Document>) -> Vec<Document> {
+        let mut doc_map = HashMap::new();
+        for doc in docs {
+            doc_map
+                .entry(doc.author.clone())
+                .or_insert(Document {
+                    id: doc.id,
+                    token: vec![],
+                    author: doc.author.clone(),
+                })
+                .token
+                .extend(doc.token.into_iter());
+        }
+        doc_map.into_values().collect()
+    }
+}
 
-    Ok(())
+fn hellinger(theta1: &Vec<f64>, theta2: &Vec<f64>) -> f64 {
+    let k = theta1.len();
+    let f = 1.0 / (2.0f64.sqrt());
+    let mut sum = 0f64;
+    for t in 0..k {
+        sum += (theta1[t].sqrt() - theta2[t].sqrt()).powi(2);
+    }
+    sum = sum.sqrt();
+    f * sum
 }
