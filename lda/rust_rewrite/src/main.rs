@@ -9,7 +9,6 @@ use rand_distr::{Distribution, Uniform, WeightedIndex};
 use rand_xorshift::XorShiftRng;
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
-// use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use serde::Deserialize;
 
 fn main() {
