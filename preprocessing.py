@@ -38,7 +38,6 @@ def preprocessing_W(path):
     df = _load(path)
     df.token = _lower(df.token)
     df.token = _tokenize(df.token)
-    df.token = _lemmatize(df.token)
     df.token = _remove_punctuation(df.token)
     df.token = _remove_stopwords(df.token)
     return df
