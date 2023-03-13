@@ -13,7 +13,7 @@ use serde::Deserialize;
 
 fn main() {
     let mut preprocessing_map: HashMap<String, (OsString, OsString)> = HashMap::new();
-    for path in std::fs::read_dir("../preprocessing_output").unwrap() {
+    for path in std::fs::read_dir("../../preprocessing_output").unwrap() {
         let path = path.unwrap();
         let str_path = path.file_name().clone().into_string().unwrap();
         let method = str_path
@@ -165,7 +165,7 @@ impl LDAModel {
             self.v,
             self.alpha,
             self.beta,
-            2000,
+            50000,
             true,
             true,
             &mut rng,
@@ -223,7 +223,7 @@ impl LDAModel {
             self.v,
             self.alpha,
             self.beta,
-            500,
+            2000,
             false,
             true,
             rng,
